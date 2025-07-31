@@ -4,13 +4,37 @@ from datetime import datetime, timedelta
 import time
 from dotenv import load_dotenv
 import os
+from sqlalchemy import create_engine
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
 
 load_dotenv()  # .env 파일 로드
 API_KEY = os.getenv("API_KEY")
 
+jar_path = os.path.abspath("C:/mysql-connector-j-8.3.0/mysql-connector-j-8.3.0.jar").replace("\\", "/")
+spark = SparkSession.builder \
+    .appName("MySQL Export") \
+    .config("spark.driver.memory", "4g") \
+    .config("spark.executor.memory", "4g") \
+    .config("spark.python.worker.memory", "2g") \
+    .config("spark.local.ip", "127.0.0.1") \
+    .config("spark.driver.host", "127.0.0.1") \
+    .config("spark.driver.bindAddress", "127.0.0.1") \
+    .config("spark.python.worker.reuse", "true") \
+    .config("spark.jars", f"file:///{jar_path}") \
+    .getOrCreate()
+
+
+jdbc_url = "jdbc:mysql://localhost:3306/seoulsubway"
+table_name = "information"
+properties = {
+    "user": "root",
+    "password": "",
+    "driver": "com.mysql.cj.jdbc.Driver"
+}
+
 # 7일에 한번 씩
 ## 4일전 데이터까지만 요청됨
-
 today = datetime.today()
 
 # 시작 날짜: 11일 전
@@ -60,7 +84,7 @@ for i in range((end_date - start_date).days + 1):
         time.sleep(0.5)
 
     except Exception as e:
-        print(f"⚠️ {date_str} 예외 발생: {e}")
+        print(f"{date_str} 예외 발생: {e}")
         continue
 
 # 필요 컬럼 정리
@@ -70,6 +94,20 @@ all_data['승차인원'] = all_data['승차인원'].astype(int)
 all_data['하차인원'] = all_data['하차인원'].astype(int)
 
 #컬럼명 변경
+all_data = all_data.rename(columns={'사용일자':'date', '호선명':'line','역명':'station','승차인원':'riding','하차인원':'dropped'})
 
+spark_df = spark.createDataFrame(all_data)
+# repartition 적절히 조절
+spark_df = spark_df.repartition(4)
 
-print(all_data.head())
+# MySQL DB에 정보 저장
+spark_df.write.format("jdbc").options(
+    url=jdbc_url,
+    driver="com.mysql.cj.jdbc.Driver",
+    dbtable=table_name,
+    user="root",
+    password="",
+    batchSize="1000"
+).mode("append").save()
+
+spark.stop()
